@@ -83,12 +83,22 @@ class MPLSFrame: #implement MPLS packet
     def __init__(self, packet, label):
         
         self.pkt = packet #packet encapsulated as string
-        self.lbl = label 
+        self.lbl = int(label) 
         
-    def to_string(self):
-        lbl_s = lbl.zfill(lbl_len)
-        s = lbl_s + pkt
+    def to_byte_S(self):
+        lbl_s = str(self.lbl)
+        s = lbl_s.zfill(self.lbl_len) + self.pkt
         return s
+    
+    @classmethod
+    def from_byte_S(self, byte_S):
+        lbl = byte_S[0 : MPLSFrame.lbl_len].strip('0') #strip the label of zeros and break it off the string
+        pkt_S = byte_S[MPLSFrame.lbl_len : ] #rest of the packet is the network packet string
+        
+        return self(pkt_S, lbl)
+    
+    def switch_label(self, new_label):
+        self.lbl = int(new_label)
 
 ## Implements a network host for receiving and transmitting data
 class Host:
@@ -183,7 +193,8 @@ class Router:
                 # TODO: handle MPLS frames
                 # m_fr = MPLSFrame.from_byte_S(pkt_S) #parse a frame out
                 #for now, we just relabel the packet as an MPLS frame without encapsulation
-                m_fr = p
+                #parse MPLS out
+                m_fr = MPLSFrame.from_byte_S(pkt_S)
                 #send the MPLS frame for processing
                 self.process_MPLS_frame(m_fr, i)
             else:
@@ -193,11 +204,10 @@ class Router:
     #  @param p Packet to forward
     #  @param i Incoming interface number for packet p
     def process_network_packet(self, pkt, i):
-        #TODO: encapsulate the packet in an MPLS frame based on self.encap_tbl_D
-        #for now, we just relabel the packet as an MPLS frame without encapsulation
-        lbl = encap_tbl_D[pkt.dst][0] #just how we decide this for now
+        #DONE: encapsulate the packet in an MPLS frame based on self.encap_tbl_D
+        lbl = self.encap_tbl_D[pkt.dst][0] #just how we decide this for now, will be changed with higher topology
         m_fr = MPLSFrame(pkt.to_byte_S(), lbl)
-        print('%s: encapsulated packet "%s" as MPLS frame "%s"' % (self, pkt, m_fr.to_string()))
+        print('%s: encapsulated packet "%s" as MPLS frame "%s"' % (self, pkt, m_fr.to_byte_S()))
         #send the encapsulated packet for processing as MPLS frame
         self.process_MPLS_frame(m_fr, i)
 
@@ -207,17 +217,32 @@ class Router:
     #  @param i Incoming interface number for the frame
     def process_MPLS_frame(self, m_fr, i):
         #TODO: implement MPLS forward, or MPLS decapsulation if this is the last hop router for the path
-        
-        print('%s: processing MPLS frame "%s"' % (self, m_fr.to_string()))
-        # for now forward the frame out interface 1
+        print('%s: processing MPLS frame "%s"' % (self, m_fr.to_byte_S()))
         try:
-            fr = LinkFrame('Network', m_fr.to_byte_S())
-            self.intf_L[1].put(fr.to_byte_S(), 'out', True)
-            print('%s: forwarding frame "%s" from interface %d to %d' % (self, fr, i, 1))
+            out_route = self.frwd_tbl_D.get(m_fr.lbl)
+            outlbl = out_route[0]
+            outinf = out_route[1]
+            
+            if outlbl in self.decap_tbl_D: #if the label matches a label end
+                #decapsulate package
+                outpkt = m_fr.pkt
+                fr = LinkFrame('Network', outpkt)
+                #send it out
+                self.intf_L[outinf].put(fr.to_byte_S(), 'out', True)
+            else:
+                #forward the packet
+                m_fr.switch_label(outlbl)
+                fr = LinkFrame('MPLS', m_fr.to_byte_S())
+                self.intf_L[outinf].put(fr.to_byte_S(), 'out', True)
+            print('%s: forwarding frame "%s" from interface %d to %d' % (self, fr, i, outinf))
         except queue.Full:
             print('%s: frame "%s" lost on interface %d' % (self, m_fr, i))
             pass
-        
+        except KeyError:
+            print("Key Error %d." (m_fr.lbl))
+            return
+        except TypeError:
+            print("Type Error.")
                 
     ## thread target for the host to keep forwarding data
     def run(self):
